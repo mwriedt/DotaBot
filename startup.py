@@ -5,6 +5,7 @@ import random
 import requests
 import json
 import time
+import datetime
 
 description = '''An example bot to showcase the discord.ext.commands extension
 module.
@@ -12,43 +13,102 @@ module.
 There are a number of utility commands being showcased here.'''
 bot = commands.Bot(command_prefix='?', description=description)
 
+NL = "\n"
+
 discord_user_dict = {}
 
-#_________________________________________________________________________________________________________________________
-
-# def get_match(match_id):
-# 	url = "https://api.opendota.com/api/matches/" + match_id
-
-# 	response = requests.request("GET", url, timeout=None)
-	
-# 	if(response.status_code != 200):
-# 		print("Broken get match!")
-# 		return None
-
-# 	result = json.loads(response.text)
-
-# 	return result
+user_playing = False;
 
 #_________________________________________________________________________________________________________________________
 
-def get_word_cloud(player_id):
-	url = "https://api.opendota.com/api/players/" + player_id + "/wordcloud"
+def log(id, text):
+	print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + " :: " + bot.get_user(id).name + " :: "+ text)
+
+#_________________________________________________________________________________________________________________________
+
+def bold(text):
+    return "**" + text + "**"
+
+#_________________________________________________________________________________________________________________________
+
+def italics(text):
+    return "_" + text + "_"
+
+#_________________________________________________________________________________________________________________________
+
+def underline(text):
+    return "__" + text + "__"
+
+#_________________________________________________________________________________________________________________________
+
+async def get_match(match_id):
+	url = "https://api.opendota.com/api/matches/" + str(match_id)
 	response = requests.request("GET", url, timeout=None)
 	if(response.status_code != 200):
-		print("Broken word cloud!")
+		print("Broken get match!")
 		return None
-
 	result = json.loads(response.text)
-
 	return result
 
 #_________________________________________________________________________________________________________________________
 
-def get_ward_count(player_id):
-	url = "https://api.opendota.com/api/players/" + player_id + "/totals"
+def refresh_player(player_id):
+	url = "https://api.opendota.com/api/players/" + player_id + "/refresh"
+	response = requests.request("POST", url, timeout=None)
+	if(response.status_code != 200):
+		print("Broken refresh!")
+
+#_________________________________________________________________________________________________________________________
+
+async def print_game_results(match_details):
+	discord_users = list(discord_user_dict.keys())
+	dota_users = list(discord_user_dict.values())
+	text_channel = bot.get_channel(736833195286462474)
+	most_kills = -1
+	most_deaths = -1
+	most_assists = -1
+
+	for player in match_details["players"]:
+		try:
+			user_index = dota_users.index(str(player["account_id"]))
+			discord_user = discord_users[user_index]
+		except ValueError:
+			continue
+
+		team_radiant = player["isRadiant"]
+		if player["kills"] > most_kills:
+			most_kills = player["kills"]
+			most_kills_player = discord_user
+
+		if player["deaths"] > most_deaths:
+			most_deaths = player["deaths"]
+			most_deaths_player = discord_user
+
+		if player["assists"] > most_assists:
+			most_assists = player["assists"]
+			most_assists_player = discord_user		
+
+			#record player stats here			
+	bot_message = ""
+
+	if team_radiant == match_details["radiant_win"]: 
+		bot_message += bold("WINNER WINNER CHICKEN DINNER") + NL
+	else:
+		bot_message += bold("Losers") + NL
+
+	bot_message += bot.get_user(most_kills_player).mention + " had the most kills with " + str(most_kills) + NL
+	bot_message += bot.get_user(most_deaths_player).mention + " had the most deaths with " + str(most_deaths) + NL
+	bot_message += bot.get_user(most_assists_player).mention + " had the most assists with " + str(most_assists) + NL
+
+	await text_channel.send(bot_message)
+
+#_________________________________________________________________________________________________________________________
+
+def get_recent_game(open_dota_id):
+	url = "https://api.opendota.com/api/players/"+ open_dota_id + "/recentMatches"
 	response = requests.request("GET", url, timeout=None)
 	if(response.status_code != 200):
-		print("Broken word cloud!")
+		print("Broken recent games!")
 		return None
 
 	result = json.loads(response.text)
@@ -70,6 +130,32 @@ def get_ward_count(player_id):
 
 # 	return result   
 
+async def wait_for_game(discord_id, game_start):
+	player_id = discord_user_dict[discord_id]
+	nickname = ""
+	while True:
+		for member in bot.get_all_members():
+			if member.id == discord_id:
+				nickname = member.nick
+				member._update()
+				if member.activity is None:
+					log(player_id, "Quit Dota 2")
+					break
+				elif member.activity == "Dota 2": 
+					log(player_id, "Searching for finished game")
+
+		refresh_player(player_id)
+		time.sleep(60)
+		recent_games = get_recent_game(player_id)
+		for game in recent_games:
+			# if game["lobby_type"] == 0:
+			most_recent_normal = game
+			break
+
+		if most_recent_normal["start_time"] > int(game_start): 
+			log(player_id, "Found finished game: " + most_recent_normal["match_id"])
+			return most_recent_normal
+
 #_________________________________________________________________________________________________________________________
 
 def load_user_info():
@@ -89,42 +175,12 @@ async def on_ready():
     load_user_info()
 
 #_________________________________________________________________________________________________________________________
-
-# @bot.command()
-# async def match(ctx: int, match_id: str):
-#     """Returns match history"""
-#     data = get_match(match_id)
-
-#     chat_log = [x["key"] for x in data["chat"] if x["type"] == "chat"]
-
-#     await ctx.send(chat_log)   
-
-#_________________________________________________________________________________________________________________________
-
 @bot.command()
-async def wordcloud(ctx: int, discord_user: discord.User):
-    """Returns most used words"""
-    data = get_word_cloud(discord_user_dict[discord_user.id])
-
-    word_list = []
-    for word, count in data["my_word_counts"].items(): 
-        if (count > 10):
-            word_list.append(word)
-        
-    await ctx.send(word_list)  
-    
-#_________________________________________________________________________________________________________________________
-
-@bot.command()
-async def wardcount(ctx: int, discord_user: discord.User):
-    """Returns most used words"""
-    data = get_ward_count(discord_user_dict[discord_user.id])
-
-    count = [x["sum"] for x in data if x["field"] == "purchase_ward_observer"][0]
-    count += [x["sum"] for x in data if x["field"] == "purchase_ward_sentry"][0]
-        
-    await ctx.send(discord_user.mention + " has placed a total of " + str(count) + " wards in Dota")  
-
+async def g(ctx: int):
+	recent_game = await wait_for_game(ctx.author.id, time.time())
+	match_details = await get_match(recent_game["match_id"])
+	await print_game_results(match_details)
+	
 #_________________________________________________________________________________________________________________________
 
 # @bot.command()
@@ -147,40 +203,25 @@ async def connect(ctx: int, user_id: str):
 		discord_user_dict[ctx.message.author.id] = user_id
 
 #_________________________________________________________________________________________________________________________
-		
 
-#_________________________________________________________________________________________________________________________
 
-# @bot.command()
-# async def roll(ctx, dice: str):
-#     """Rolls a dice in NdN format."""
-#     try:
-#         rolls, limit = map(int, dice.split('d'))
-#     except Exception:
-#         await ctx.send('Format has to be in NdN!')
-#         return
+@bot.event
+async def on_member_update(before, after):
+#should pass the time this is called into here, so when I look at the recent matches from dota I can 
+# find one that has a game time greater than this, when I do find a game, I reset this time incase they play another game
+	if after.id in discord_user_dict.keys(): 
+		if after.activity is None: 
+			exit
+		elif after.activity.name == "Dota 2":
+			log(after.id, "Launched Dota 2")
+			recent_game = await wait_for_game(after.id, time.time())
+			if recent_game != NULL:
+				match_details = await get_match(recent_game["match_id"])
+				await print_game_results(match_details)
+				log(after.id, "Results sent!")
+	
 
-#     result = ', '.join(str(random.randint(1, limit)) for r in range(rolls))
-#     await ctx.send(result)
-
-#_________________________________________________________________________________________________________________________
-
-# @bot.group()
-# async def cool(ctx):
-#     """Says if a user is cool.
-
-#     In reality this just checks if a subcommand is being invoked.
-#     """
-#     if ctx.invoked_subcommand is None:
-#         await ctx.send('No, {0.subcommand_passed} is not cool'.format(ctx))
-
-# #_________________________________________________________________________________________________________________________
-
-# @cool.command(name='bot')
-# async def _bot(ctx):
-#     """Is the bot cool?"""
-#     await ctx.send('Yes, the bot is cool.')
-
+		                                           
 #_________________________________________________________________________________________________________________________
 
 bot.run(os.environ['DISCORD_TOKEN'])
