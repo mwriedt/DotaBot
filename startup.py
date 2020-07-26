@@ -6,6 +6,7 @@ import requests
 import json
 import time
 import datetime
+import asyncio
 
 description = '''An example bot to showcase the discord.ext.commands extension
 module.
@@ -132,29 +133,19 @@ def get_recent_game(open_dota_id):
 
 async def wait_for_game(discord_id, game_start):
 	player_id = discord_user_dict[discord_id]
-	nickname = ""
-	while True:
-		for member in bot.get_all_members():
-			if member.id == discord_id:
-				nickname = member.nick
-				member._update()
-				if member.activity is None:
-					log(player_id, "Quit Dota 2")
-					break
-				elif member.activity == "Dota 2": 
-					log(player_id, "Searching for finished game")
+	log(discord_id, "Searching for finished game")
 
-		refresh_player(player_id)
-		time.sleep(60)
-		recent_games = get_recent_game(player_id)
-		for game in recent_games:
-			# if game["lobby_type"] == 0:
-			most_recent_normal = game
-			break
+	refresh_player(player_id)
+	# time.sleep(0)
+	recent_games = get_recent_game(player_id)
+	for game in recent_games:
+		# if game["lobby_type"] == 0:
+		most_recent_normal = game
+		break
 
-		if most_recent_normal["start_time"] > int(game_start): 
-			log(player_id, "Found finished game: " + most_recent_normal["match_id"])
-			return most_recent_normal
+	if most_recent_normal["start_time"] > int(game_start): 
+		log(player_id, "Found finished game: " + most_recent_normal["match_id"])
+		return most_recent_normal
 
 #_________________________________________________________________________________________________________________________
 
@@ -163,23 +154,6 @@ def load_user_info():
 		lines = []
 		for line in file_in:
 			discord_user_dict[int(line.split(':')[0])] = line.split(':')[1]
-
-#_________________________________________________________________________________________________________________________
-
-@bot.event
-async def on_ready():
-    print('Logged in as')
-    print(bot.user.name)
-    print(bot.user.id)
-    print('------')
-    load_user_info()
-
-#_________________________________________________________________________________________________________________________
-@bot.command()
-async def g(ctx: int):
-	recent_game = await wait_for_game(ctx.author.id, time.time())
-	match_details = await get_match(recent_game["match_id"])
-	await print_game_results(match_details)
 	
 #_________________________________________________________________________________________________________________________
 
@@ -191,6 +165,50 @@ async def g(ctx: int):
 #     hero_list = update_hero_list()
 
 #     File_object.write(json.dumps(hero_list))
+
+class SearchMachine():
+	discord_id_list = set([])
+
+	def add_id(self, discord_id):
+		log(discord_id, "Launched Dota 2")
+		self.discord_id_list.add(discord_id)
+
+	def remove_id(self, discord_id):
+		try:
+			log(discord_id, "Not Playing Dota 2")
+			self.discord_id_list.remove(discord_id)
+		except KeyError:
+			pass
+
+	async def run(self, launch_time):
+		while(len(self.discord_id_list) > 0):
+			print("Run Loop 1")
+			for discord_id in self.discord_id_list:
+				log(discord_id, "Run Loop 2")
+				recent_game = await wait_for_game(discord_id, launch_time)
+				if recent_game is not None:
+					match_details = await get_match(recent_game["match_id"])
+					await print_game_results(match_details)
+					log(after.id, "Results sent!")
+#_________________________________________________________________________________________________________________________
+
+search_machine_instance = SearchMachine()
+
+@bot.event
+async def on_ready():
+	print('Logged in as')
+	print(bot.user.name)
+	print(bot.user.id)
+	print('------')
+	load_user_info()
+	
+
+#_________________________________________________________________________________________________________________________
+@bot.command()
+async def g(ctx: int):
+	recent_game = await wait_for_game(ctx.author.id, time.time())
+	match_details = await get_match(recent_game["match_id"])
+	await print_game_results(match_details)
 
 #_________________________________________________________________________________________________________________________
 
@@ -211,17 +229,17 @@ async def on_member_update(before, after):
 # find one that has a game time greater than this, when I do find a game, I reset this time incase they play another game
 	if after.id in discord_user_dict.keys(): 
 		if after.activity is None: 
-			exit
+			search_machine_instance.remove_id(after.id)
 		elif after.activity.name == "Dota 2":
-			log(after.id, "Launched Dota 2")
-			recent_game = await wait_for_game(after.id, time.time())
-			if recent_game != NULL:
-				match_details = await get_match(recent_game["match_id"])
-				await print_game_results(match_details)
-				log(after.id, "Results sent!")
-	
-
+			search_machine_instance.add_id(after.id)
+			if len(search_machine_instance.discord_id_list) == 1:
+				asyncio.run(await search_machine_instance.run(time.time()))
+	print("End event")
 		                                           
 #_________________________________________________________________________________________________________________________
 
-bot.run(os.environ['DISCORD_TOKEN'])
+def main():
+	bot.run(os.environ['DISCORD_TOKEN'])
+	search_machine_instance.run()
+
+asyncio.run(main())
