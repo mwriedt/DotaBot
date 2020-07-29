@@ -7,23 +7,22 @@ import json
 import time
 import datetime
 import asyncio
+import os
 
-description = '''An example bot to showcase the discord.ext.commands extension
-module.
-
-There are a number of utility commands being showcased here.'''
-bot = commands.Bot(command_prefix='?', description=description)
-
+TOKEN = os.environ['DISCORD_TOKEN']
+CHANNEL_ID = 736833195286462474
 NL = "\n"
 
-discord_user_dict = {}
+bot = commands.Bot(command_prefix='?')
 
-user_playing = False;
+discord_user_dict = {}
+processed_matches = set([])
+dota_players = set([])
 
 #_________________________________________________________________________________________________________________________
 
-def log(id, text):
-	print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + " :: " + bot.get_user(id).name + " :: "+ text)
+def log(discord_id, log_text):
+	print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + " :: " + bot.get_user(int(discord_id)).name + " :: "+ log_text)
 
 #_________________________________________________________________________________________________________________________
 
@@ -64,7 +63,7 @@ def refresh_player(player_id):
 async def print_game_results(match_details):
 	discord_users = list(discord_user_dict.keys())
 	dota_users = list(discord_user_dict.values())
-	text_channel = bot.get_channel(736833195286462474)
+	text_channel = bot.get_channel(CHANNEL_ID)
 	most_kills = -1
 	most_deaths = -1
 	most_assists = -1
@@ -105,8 +104,8 @@ async def print_game_results(match_details):
 
 #_________________________________________________________________________________________________________________________
 
-def get_recent_game(open_dota_id):
-	url = "https://api.opendota.com/api/players/"+ open_dota_id + "/recentMatches"
+def get_recent_game(player_id):
+	url = "https://api.opendota.com/api/players/"+ player_id + "/recentMatches"
 	response = requests.request("GET", url, timeout=None)
 	if(response.status_code != 200):
 		print("Broken recent games!")
@@ -131,21 +130,29 @@ def get_recent_game(open_dota_id):
 
 # 	return result   
 
-async def wait_for_game(discord_id, game_start):
-	player_id = discord_user_dict[discord_id]
-	log(discord_id, "Searching for finished game")
+async def wait_for_game(player_info, lobby_type=[0]):
+	player_id = discord_user_dict[player_info.discord_id]
+	log(player_info.discord_id, "Searching for finished game")
 
 	refresh_player(player_id)
-	# time.sleep(0)
+	await asyncio.sleep(3)
 	recent_games = get_recent_game(player_id)
+	most_recent_normal = None
 	for game in recent_games:
-		# if game["lobby_type"] == 0:
-		most_recent_normal = game
-		break
+		if game["lobby_type"] in lobby_type:
+			if game["match_id"] not in processed_matches:
+				most_recent_normal = game
+				break
+			else: #TODO: Fix temp code
+				player_info.launch_time = 0#time.time() # reset most recent game time (for other players that loop here)
 
-	if most_recent_normal["start_time"] > int(game_start): 
-		log(player_id, "Found finished game: " + most_recent_normal["match_id"])
-		return most_recent_normal
+	#probably have a access issue here if a recent game cannot be found
+	if most_recent_normal is not None: 
+		if most_recent_normal["start_time"] > int(player_info.launch_time): 
+			log(player_info.discord_id, "Found finished game: " + str(most_recent_normal["match_id"]))
+			player_info.launch_time = time.time() # reset most recent game time (for first player to loop here)
+			processed_matches.add(most_recent_normal["match_id"])
+			return most_recent_normal
 
 #_________________________________________________________________________________________________________________________
 
@@ -165,34 +172,39 @@ def load_user_info():
 #     hero_list = update_hero_list()
 
 #     File_object.write(json.dumps(hero_list))
-
-class SearchMachine():
-	discord_id_list = set([])
-
-	def add_id(self, discord_id):
-		log(discord_id, "Launched Dota 2")
-		self.discord_id_list.add(discord_id)
-
-	def remove_id(self, discord_id):
-		try:
-			log(discord_id, "Not Playing Dota 2")
-			self.discord_id_list.remove(discord_id)
-		except KeyError:
-			pass
-
-	async def run(self, launch_time):
-		while(len(self.discord_id_list) > 0):
-			print("Run Loop 1")
-			for discord_id in self.discord_id_list:
-				log(discord_id, "Run Loop 2")
-				recent_game = await wait_for_game(discord_id, launch_time)
-				if recent_game is not None:
-					match_details = await get_match(recent_game["match_id"])
-					await print_game_results(match_details)
-					log(after.id, "Results sent!")
 #_________________________________________________________________________________________________________________________
 
-search_machine_instance = SearchMachine()
+class id_info():
+	def __init__(self, discord_id, launch_time):    
+		self.discord_id = discord_id
+		self.launch_time = launch_time
+
+	def __eq__(self, other):
+		return self.discord_id == other.discord_id
+
+	def __ne__(self, other):
+		return self.discord_id != other.discord_id
+
+	def __hash__(self):
+		return hash(self.discord_id)
+
+#_________________________________________________________________________________________________________________________
+
+async def run_search():
+	while len(dota_players) > 0:
+		player_set = dota_players.copy()
+		for player_info in player_set:
+			log(player_info.discord_id, "Begin search")
+			recent_game = await wait_for_game(player_info)
+			if recent_game is not None:
+				match_details = await get_match(recent_game["match_id"])
+				await print_game_results(match_details)
+				log(player_info.discord_id, "Results sent!")
+			else: 
+				await asyncio.sleep(3) #let other events get through if no match is found
+			log(player_info.discord_id, "End search")
+			
+#_________________________________________________________________________________________________________________________
 
 @bot.event
 async def on_ready():
@@ -201,45 +213,49 @@ async def on_ready():
 	print(bot.user.id)
 	print('------')
 	load_user_info()
-	
+	game = discord.Game("League of Legends")
+	await bot.change_presence(status=discord.Status.online, activity=game)
 
 #_________________________________________________________________________________________________________________________
+
 @bot.command()
 async def g(ctx: int):
-	recent_game = await wait_for_game(ctx.author.id, time.time())
+	recent_game = await wait_for_game(player_info=id_info(ctx.author.id, 0), lobby_type=[0,1,2,3,4,5,6,7,8,9])
 	match_details = await get_match(recent_game["match_id"])
 	await print_game_results(match_details)
 
 #_________________________________________________________________________________________________________________________
 
 @bot.command()
-async def connect(ctx: int, user_id: str):
+async def connect(ctx: int, player_id: str):
 	"""Link Discord User to OpenDota profile"""	
-	if user_id not in discord_user_dict.values():
+	if player_id not in discord_user_dict.values():
 		with open("user_info.txt", "a") as myfile:
-			myfile.write(str(ctx.message.author.id) + ":" + user_id + ":\n")
-		discord_user_dict[ctx.message.author.id] = user_id
+			myfile.write(str(ctx.message.author.id) + ":" + player_id + ":\n")
+		discord_user_dict[ctx.message.author.id] = player_id
 
 #_________________________________________________________________________________________________________________________
 
+loop = asyncio.get_event_loop()
 
 @bot.event
 async def on_member_update(before, after):
-#should pass the time this is called into here, so when I look at the recent matches from dota I can 
-# find one that has a game time greater than this, when I do find a game, I reset this time incase they play another game
 	if after.id in discord_user_dict.keys(): 
+		log(after.id, "start om_member_update")
 		if after.activity is None: 
-			search_machine_instance.remove_id(after.id)
+			try:
+				dota_players.remove(id_info(after.id, 0))
+			except KeyError:
+				pass	
 		elif after.activity.name == "Dota 2":
-			search_machine_instance.add_id(after.id)
-			if len(search_machine_instance.discord_id_list) == 1:
-				asyncio.run(await search_machine_instance.run(time.time()))
-	print("End event")
+			dota_players.add(id_info(after.id, time.time()))
+			if len(dota_players) == 1:
+				loop.create_task(run_search())
+		log(after.id, "end om_member_update")
 		                                           
 #_________________________________________________________________________________________________________________________
 
 def main():
-	bot.run(os.environ['DISCORD_TOKEN'])
-	search_machine_instance.run()
+	bot.run(TOKEN)
 
-asyncio.run(main())
+main()
